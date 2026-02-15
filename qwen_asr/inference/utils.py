@@ -15,14 +15,26 @@
 # limitations under the License.
 import base64
 import io
+import os
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 import librosa
 import numpy as np
 import soundfile as sf
+
+# Load .env from project root (3 levels up: utils.py -> inference -> qwen_asr -> project_root)
+try:
+    from dotenv import load_dotenv
+    _project_root = Path(__file__).parent.parent.parent
+    _env_file = _project_root / ".env"
+    if _env_file.exists():
+        load_dotenv(_env_file)
+except ImportError:
+    pass
 
 AudioLike = Union[
     str,                      # wav path / URL / base64
@@ -32,7 +44,10 @@ MaybeList = Union[Any, List[Any]]
 
 SAMPLE_RATE = 16000
 MAX_ASR_INPUT_SECONDS = 1200
-MAX_FORCE_ALIGN_INPUT_SECONDS = 180
+# Load MAX_FORCE_ALIGN_INPUT_SECONDS from env, default 180 (3 min)
+# Lower value = more chunks = more accurate but slower
+MAX_FORCE_ALIGN_INPUT_SECONDS = float(os.getenv("MAX_CHUNK_SECONDS", "180"))
+print(f"MAX_FORCE_ALIGN_INPUT_SECONDS: {MAX_FORCE_ALIGN_INPUT_SECONDS}")
 MIN_ASR_INPUT_SECONDS = 0.5
 SUPPORTED_LANGUAGES: List[str] = [
     "Chinese",

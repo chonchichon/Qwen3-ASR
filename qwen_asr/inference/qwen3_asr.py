@@ -399,10 +399,22 @@ class Qwen3ASRModel:
             print("[4/5] Parsing ASR outputs...")
         per_chunk_lang: List[str] = []
         per_chunk_text: List[str] = []
-        for out, forced_lang in zip(raw_outputs, chunk_lang):
+        for idx, (out, forced_lang) in enumerate(zip(raw_outputs, chunk_lang)):
             lang, txt = parse_asr_output(out, user_language=forced_lang)
             per_chunk_lang.append(lang)
             per_chunk_text.append(txt)
+
+            # Debug: show each chunk's result
+            if verbose:
+                c = chunks[idx]
+                chunk_duration = c.wav.shape[0] / c.sr
+                start_time = c.offset_sec
+                end_time = start_time + chunk_duration
+                txt_preview = txt[:50] + "..." if len(txt) > 50 else txt
+                if txt.strip():
+                    print(f"      Chunk {idx+1}: {start_time:.1f}s-{end_time:.1f}s ({chunk_duration:.1f}s) -> {len(txt)} chars: {txt_preview}")
+                else:
+                    print(f"      Chunk {idx+1}: {start_time:.1f}s-{end_time:.1f}s ({chunk_duration:.1f}s) -> [EMPTY/SILENT]")
 
         # forced alignment (optional)
         per_chunk_align: List[Optional[Any]] = [None] * len(chunks)
