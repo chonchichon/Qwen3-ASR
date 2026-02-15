@@ -303,6 +303,7 @@ class Qwen3ASRModel:
         context: Union[str, List[str]] = "",
         language: Optional[Union[str, List[Optional[str]]]] = None,
         return_time_stamps: bool = False,
+        verbose: bool = True,
     ) -> List[ASRTranscription]:
         """
         Transcribe audio with optional context and optional forced alignment timestamps.
@@ -335,8 +336,12 @@ class Qwen3ASRModel:
         if return_time_stamps and self.forced_aligner is None:
             raise ValueError("return_time_stamps=True requires `forced_aligner` to be provided at initialization.")
 
+        if verbose:
+            print("[1/5] Loading and normalizing audio...")
         wavs = normalize_audios(audio)
         n = len(wavs)
+        if verbose:
+            print(f"      Loaded {n} audio file(s)")
 
         ctxs = context if isinstance(context, list) else [context]
         if len(ctxs) == 1 and n > 1:
@@ -366,6 +371,8 @@ class Qwen3ASRModel:
         max_chunk_sec = MAX_FORCE_ALIGN_INPUT_SECONDS if return_time_stamps else MAX_ASR_INPUT_SECONDS
 
         # chunk audios and record mapping
+        if verbose:
+            print("[2/5] Splitting audio into chunks...")
         chunks: List[AudioChunk] = []
         for i, wav in enumerate(wavs):
             parts = split_audio_into_chunks(
@@ -375,14 +382,21 @@ class Qwen3ASRModel:
             )
             for j, (cwav, offset_sec) in enumerate(parts):
                 chunks.append(AudioChunk(orig_index=i, chunk_index=j, wav=cwav, sr=SAMPLE_RATE, offset_sec=offset_sec))
+        if verbose:
+            total_duration = sum(c.wav.shape[0] / c.sr for c in chunks)
+            print(f"      Split into {len(chunks)}chunk(s), total duration: {total_duration:.1f}s")
 
         # run ASR on chunks
+        if verbose:
+            print(f"[3/5] Running ASR inference on {len(chunks)}chunk(s)...")
         chunk_ctx: List[str] = [ctxs[c.orig_index] for c in chunks]
         chunk_lang: List[Optional[str]] = [langs_norm[c.orig_index] for c in chunks]
         chunk_wavs: List[np.ndarray] = [c.wav for c in chunks]
-        raw_outputs = self._infer_asr(chunk_ctx, chunk_wavs, chunk_lang)
+        raw_outputs = self._infer_asr(chunk_ctx, chunk_wavs, chunk_lang, verbose=verbose)
 
         # parse outputs, prepare for optional alignment
+        if verbose:
+            print("[4/5] Parsing ASR outputs...")
         per_chunk_lang: List[str] = []
         per_chunk_text: List[str] = []
         for out, forced_lang in zip(raw_outputs, chunk_lang):
@@ -393,6 +407,8 @@ class Qwen3ASRModel:
         # forced alignment (optional)
         per_chunk_align: List[Optional[Any]] = [None] * len(chunks)
         if return_time_stamps:
+            if verbose:
+                print("[5/5] Running forced alignment for timestamps...")
             to_align_audio = []
             to_align_text = []
             to_align_lang = []
@@ -408,11 +424,14 @@ class Qwen3ASRModel:
 
             # batch align with max_inference_batch_size
             aligned_results: List[Any] = []
-            for a_chunk, t_chunk, l_chunk in zip(
+            align_batches = list(zip(
                 chunk_list(to_align_audio, self.max_inference_batch_size),
                 chunk_list(to_align_text, self.max_inference_batch_size),
                 chunk_list(to_align_lang, self.max_inference_batch_size),
-            ):
+            ))
+            for batch_idx, (a_chunk, t_chunk, l_chunk) in enumerate(align_batches):
+                if verbose:
+                    print(f"      Aligning batch {batch_idx + 1}/{len(align_batches)}...")
                 aligned_results.extend(
                     self.forced_aligner.align(audio=a_chunk, text=t_chunk, language=l_chunk)
                 )
@@ -422,6 +441,8 @@ class Qwen3ASRModel:
                 c = chunks[idx]
                 r = aligned_results[k]
                 per_chunk_align[idx] = self._offset_align_result(r, c.offset_sec)
+        elif verbose:
+            print("[5/5] Skipping forced alignment (timestamps not requested)")
 
         # merge chunks back to original samples
         out_langs: List[List[str]] = [[] for _ in range(n)]
@@ -469,6 +490,7 @@ class Qwen3ASRModel:
         contexts: List[str],
         wavs: List[np.ndarray],
         languages: List[Optional[str]],
+        verbose: bool = False,
     ) -> List[str]:
         """
         Run backend inference for chunk-level items.
@@ -477,14 +499,15 @@ class Qwen3ASRModel:
             contexts: List of context strings.
             wavs: List of mono waveforms (np.ndarray).
             languages: List of forced languages or None.
+            verbose: Whether to print progress.
 
         Returns:
             List[str]: Raw decoded strings (one per chunk).
         """
         if self.backend == "transformers":
-            return self._infer_asr_transformers(contexts, wavs, languages)
+            return self._infer_asr_transformers(contexts, wavs, languages, verbose=verbose)
         if self.backend == "vllm":
-            return self._infer_asr_vllm(contexts, wavs, languages)
+            return self._infer_asr_vllm(contexts, wavs, languages, verbose=verbose)
         raise RuntimeError(f"Unknown backend: {self.backend}")
 
     def _infer_asr_transformers(
@@ -492,6 +515,7 @@ class Qwen3ASRModel:
         contexts: List[str],
         wavs: List[np.ndarray],
         languages: List[Optional[str]],
+        verbose: bool = False,
     ) -> List[str]:
         outs: List[str] = []
 
@@ -501,9 +525,18 @@ class Qwen3ASRModel:
         if batch_size is None or batch_size < 0:
             batch_size = len(texts)
 
-        for i in range(0, len(texts), batch_size):
+        total_batches = (len(texts) + batch_size - 1) // batch_size
+        total_chunks = len(texts)
+        processed_chunks = 0
+
+        for batch_idx, i in enumerate(range(0, len(texts), batch_size)):
             sub_text = texts[i : i + batch_size]
             sub_wavs = wavs[i : i + batch_size]
+
+            if verbose:
+                pct = (processed_chunks / total_chunks) * 100
+                print(f"\r      ASR: {processed_chunks}/{total_chunks} chunks ({pct:.1f}%) | Batch {batch_idx + 1}/{total_batches}...", end="", flush=True)
+
             inputs = self.processor(text=sub_text, audio=sub_wavs, return_tensors="pt", padding=True)
             inputs = inputs.to(self.model.device).to(self.model.dtype)
 
@@ -515,6 +548,10 @@ class Qwen3ASRModel:
                 clean_up_tokenization_spaces=False,
             )
             outs.extend(list(decoded))
+            processed_chunks += len(sub_text)
+
+        if verbose:
+            print(f"\r      ASR: {total_chunks}/{total_chunks} chunks (100.0%) | Done!                    ")
 
         return outs
 
@@ -523,6 +560,7 @@ class Qwen3ASRModel:
         contexts: List[str],
         wavs: List[np.ndarray],
         languages: List[Optional[str]],
+        verbose: bool = False,
     ) -> List[str]:
         inputs: List[Dict[str, Any]] = []
         for c, w, fl in zip(contexts, wavs, languages):
@@ -530,10 +568,15 @@ class Qwen3ASRModel:
             inputs.append({"prompt": prompt, "multi_modal_data": {"audio": [w]}})
 
         outs: List[str] = []
-        for batch in chunk_list(inputs, self.max_inference_batch_size):
+        batches = list(chunk_list(inputs, self.max_inference_batch_size))
+        for batch_idx, batch in enumerate(batches):
+            if verbose:
+                print(f"      Processing batch {batch_idx + 1}/{len(batches)}...")
             outputs = self.model.generate(batch, sampling_params=self.sampling_params, use_tqdm=False)
             for o in outputs:
                 outs.append(o.outputs[0].text)
+            if verbose:
+                print(f"      Batch {batch_idx + 1}/{len(batches)}complete")
         return outs
 
     def _offset_align_result(self, result: Any, offset_sec: float) -> Any:
