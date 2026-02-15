@@ -231,6 +231,10 @@ class PunctuationBasedSegmenter(SentenceSegmenter):
         """
         Map sentences to timestamps by matching characters.
         Also checks for large gaps and long durations to split subtitles.
+
+        Duration split logic:
+        - If duration > max_subtitle_duration AND has punctuation: split at last punctuation
+        - If duration > max_subtitle_duration AND no punctuation: keep as is
         """
         subtitles = []
         ts_index = 0
@@ -246,25 +250,40 @@ class PunctuationBasedSegmenter(SentenceSegmenter):
             if not sentence_chars:
                 continue
 
-            # Find start time
-            start_time = timestamps[ts_index].start_time
-            end_time = start_time
-
-            # Track text segments for potential splitting
-            current_text = ""
-            segment_start_time = start_time
-            prev_end_time = start_time
-
-            # Match characters to timestamps
+            # Collect all timestamp items for this sentence first
+            sentence_ts_items = []
+            temp_ts_index = ts_index
             chars_matched = 0
-            while ts_index < len(timestamps) and chars_matched < len(sentence_chars):
-                ts_item = timestamps[ts_index]
+
+            while temp_ts_index < len(timestamps) and chars_matched < len(sentence_chars):
+                ts_item = timestamps[temp_ts_index]
+                ts_text = ts_item.text.strip()
+
+                if ts_text and ts_text not in CONFIG.sentence_endings:
+                    chars_matched += len(ts_text)
+
+                sentence_ts_items.append(ts_item)
+                temp_ts_index += 1
+
+            # Update ts_index for next sentence
+            ts_index = temp_ts_index
+
+            if not sentence_ts_items:
+                continue
+
+            # Now process this sentence with gap and duration checks
+            current_text = ""
+            segment_start_time = sentence_ts_items[0].start_time
+            prev_end_time = segment_start_time
+            last_punct_index = -1  # Track last punctuation position in current_text
+            last_punct_end_time = None
+
+            for ts_item in sentence_ts_items:
                 ts_text = ts_item.text.strip()
 
                 # Check for large gap - force split
                 gap = ts_item.start_time - prev_end_time
                 if current_text and gap > CONFIG.max_pause_gap:
-                    # Save current segment
                     subtitles.append(Subtitle(
                         index=subtitle_index,
                         start_time=segment_start_time,
@@ -274,40 +293,71 @@ class PunctuationBasedSegmenter(SentenceSegmenter):
                     subtitle_index += 1
                     current_text = ""
                     segment_start_time = ts_item.start_time
+                    last_punct_index = -1
+                    last_punct_end_time = None
 
-                # Check for long duration - force split
+                # Check for long duration
                 current_duration = ts_item.end_time - segment_start_time
                 if current_text and current_duration > CONFIG.max_subtitle_duration:
-                    # Save current segment
-                    subtitles.append(Subtitle(
-                        index=subtitle_index,
-                        start_time=segment_start_time,
-                        end_time=prev_end_time,
-                        text=current_text.strip()
-                    ))
-                    subtitle_index += 1
-                    current_text = ""
-                    segment_start_time = ts_item.start_time
+                    # Only split if we have punctuation in current_text
+                    if last_punct_index > 0 and last_punct_end_time is not None:
+                        # Split at last punctuation position
+                        text_before_punct = current_text[:last_punct_index + 1].strip()
+                        text_after_punct = current_text[last_punct_index + 1:].strip()
 
+                        subtitles.append(Subtitle(
+                            index=subtitle_index,
+                            start_time=segment_start_time,
+                            end_time=last_punct_end_time,
+                            text=text_before_punct
+                        ))
+                        subtitle_index += 1
+
+                        # Continue with remaining text
+                        current_text = text_after_punct
+                        segment_start_time = last_punct_end_time
+                        last_punct_index = -1
+                        last_punct_end_time = None
+                    # If no punctuation, keep accumulating (don't split mid-word)
+
+                # Add current text
                 if ts_text and ts_text not in CONFIG.sentence_endings:
-                    chars_matched += len(ts_text)
                     current_text += ts_text
 
-                end_time = ts_item.end_time
+                    # Check if this char is punctuation (for tracking split point)
+                    # Look at original sentence to find punctuation after this position
+                    text_len = len(current_text)
+                    if text_len > 0:
+                        # Find corresponding position in original sentence
+                        orig_pos = 0
+                        clean_count = 0
+                        for c in sentence:
+                            if c not in CONFIG.sentence_endings and not c.isspace():
+                                clean_count += 1
+                            if clean_count == text_len:
+                                # Check if next char is punctuation
+                                if orig_pos + 1 < len(sentence) and sentence[orig_pos + 1] in CONFIG.sentence_endings:
+                                    current_text += sentence[orig_pos + 1]  # Add punctuation
+                                    last_punct_index = len(current_text) - 1
+                                    last_punct_end_time = ts_item.end_time
+                                break
+                            orig_pos += 1
+
                 prev_end_time = ts_item.end_time
-                ts_index += 1
 
             # Add remaining text from this sentence
             if current_text.strip():
                 # Find matching punctuation from original sentence
                 remaining_punct = ""
                 if sentence and sentence[-1] in CONFIG.sentence_endings:
-                    remaining_punct = sentence[-1]
+                    # Only add if not already in current_text
+                    if not current_text.endswith(sentence[-1]):
+                        remaining_punct = sentence[-1]
 
                 subtitles.append(Subtitle(
                     index=subtitle_index,
                     start_time=segment_start_time,
-                    end_time=end_time,
+                    end_time=prev_end_time,
                     text=current_text.strip() + remaining_punct
                 ))
                 subtitle_index += 1
