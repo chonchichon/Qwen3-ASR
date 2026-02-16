@@ -545,15 +545,17 @@ def main():
                 if os.path.exists(srt_path):
                     print(f"  Skipping {file} (SRT exists)")
                     continue
+                try:
+                    output_path = transcribe_audio_to_srt(
+                        audio_path=os.path.join(folder, file),
+                        model=model,
+                        segmenter=segmenter,
+                    )
 
-                output_path = transcribe_audio_to_srt(
-                    audio_path=os.path.join(folder, file),
-                    model=model,
-                    segmenter=segmenter,
-                )
-
-                print(f"  Saved: {output_path}")
-
+                    print(f"  Saved: {output_path}")
+                except Exception as e:
+                    print(f"  Error transcribing {file}: {e}")
+                    continue
 
 if __name__ == "__main__":
     main()
