@@ -370,7 +370,7 @@ class Qwen3ASRModel:
         if max_chunk_seconds is not None:
             max_chunk_sec = max_chunk_seconds
         else:
-            max_chunk_sec = MAX_FORCE_ALIGN_INPUT_SECONDS if return_time_stamps else MAX_ASR_INPUT_SECONDS
+            max_chunk_sec =  MAX_ASR_INPUT_SECONDS
 
         # chunk audios and record mapping
         if verbose:
