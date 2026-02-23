@@ -262,7 +262,7 @@ def split_audio_into_chunks(
     wav: np.ndarray,
     sr: int,
     max_chunk_sec: float,
-    search_expand_sec: float = 5.0,
+    search_expand_sec: float = 10.0,
     min_window_ms: float = 100.0,
 ) -> List[Tuple[np.ndarray, float]]:
     """
@@ -312,12 +312,44 @@ def split_audio_into_chunks(
             seg = wav[left:right]
             seg_abs = np.abs(seg)
 
+            # Tính năng lượng trung bình trong cửa sổ trượt
             window_sums = np.convolve(seg_abs, np.ones(win, dtype=np.float32), mode="valid")
 
-            min_pos = int(np.argmin(window_sums))
+            # Tìm TẤT CẢ các vị trí có năng lượng thấp (potential silence)
+            # Threshold: năng lượng < 20% của năng lượng trung bình
+            mean_energy = np.mean(window_sums)
+            silence_threshold = mean_energy * 0.2
+            silence_candidates = np.where(window_sums < silence_threshold)[0]
 
+            if len(silence_candidates) > 0:
+                # Tìm khoảng im lặng dài nhất
+                # Group consecutive silence positions
+                silence_groups = []
+                current_group = [silence_candidates[0]]
+
+                for i in range(1, len(silence_candidates)):
+                    if silence_candidates[i] - silence_candidates[i-1] <= win:
+                        # Consecutive silence
+                        current_group.append(silence_candidates[i])
+                    else:
+                        # New silence group
+                        silence_groups.append(current_group)
+                        current_group = [silence_candidates[i]]
+
+                silence_groups.append(current_group)
+
+                # Tìm group dài nhất
+                longest_group = max(silence_groups, key=len)
+
+                # Cắt ở giữa khoảng im lặng dài nhất
+                min_pos = longest_group[len(longest_group) // 2]
+            else:
+                # Không tìm thấy silence → dùng vị trí năng lượng thấp nhất
+                min_pos = int(np.argmin(window_sums))
+
+            # Tinh chỉnh vị trí cắt trong window
             wstart = min_pos
-            wend = min_pos + win
+            wend = min(min_pos + win, len(seg_abs))
             local = seg_abs[wstart:wend]
             inner = int(np.argmin(local))
             boundary = left + wstart + inner

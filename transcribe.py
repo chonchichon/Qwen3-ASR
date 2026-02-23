@@ -281,20 +281,23 @@ class PunctuationBasedSegmenter(SentenceSegmenter):
             for ts_item in sentence_ts_items:
                 ts_text = ts_item.text.strip()
 
-                # Check for large gap - force split
+                # Check for large gap - force split ONLY if we have punctuation before gap
                 gap = ts_item.start_time - prev_end_time
                 if current_text and gap > CONFIG.max_pause_gap:
-                    subtitles.append(Subtitle(
-                        index=subtitle_index,
-                        start_time=segment_start_time,
-                        end_time=prev_end_time,
-                        text=current_text.strip()
-                    ))
-                    subtitle_index += 1
-                    current_text = ""
-                    segment_start_time = ts_item.start_time
-                    last_punct_index = -1
-                    last_punct_end_time = None
+                    # Only split if we have punctuation in accumulated text
+                    has_punct = any(c in CONFIG.sentence_endings for c in current_text)
+                    if has_punct:
+                        subtitles.append(Subtitle(
+                            index=subtitle_index,
+                            start_time=segment_start_time,
+                            end_time=prev_end_time,
+                            text=current_text.strip()
+                        ))
+                        subtitle_index += 1
+                        current_text = ""
+                        segment_start_time = ts_item.start_time
+                        last_punct_index = -1
+                        last_punct_end_time = None
 
                 # Check for long duration
                 current_duration = ts_item.end_time - segment_start_time
@@ -362,7 +365,124 @@ class PunctuationBasedSegmenter(SentenceSegmenter):
                 ))
                 subtitle_index += 1
 
-        return subtitles
+        # Post-process: merge consecutive subtitles with small gaps
+        merged = self._merge_consecutive_subtitles(subtitles)
+
+        # Filter out abnormal subtitles (long duration but very short text)
+        return self._filter_abnormal_subtitles(merged)
+
+    def _merge_consecutive_subtitles(self, subtitles: List[Subtitle]) -> List[Subtitle]:
+        """
+        Merge consecutive subtitles if gap between them < max_pause_gap.
+        This fixes fragmented subtitles like:
+          有。 (0.08s) → 什。 (0.0s) → 么问题 (2.16s)
+        Into:
+          有什么问题 (2.24s)
+
+        Constraints:
+        - Won't merge if resulting text > max_chars
+        - Won't merge if resulting duration > max_subtitle_duration
+        """
+        if not subtitles:
+            return subtitles
+
+        merged = []
+        current = subtitles[0]
+
+        for i in range(1, len(subtitles)):
+            next_sub = subtitles[i]
+            gap = next_sub.start_time - current.end_time
+
+            # Check if we should merge
+            if gap < CONFIG.max_pause_gap:
+                # Calculate merged properties
+                merged_text = current.text + next_sub.text
+                merged_duration = next_sub.end_time - current.start_time
+
+                # Check constraints
+                exceeds_chars = len(merged_text) > self.max_chars
+                exceeds_duration = merged_duration > CONFIG.max_subtitle_duration
+
+                # Only merge if within limits
+                if not exceeds_chars and not exceeds_duration:
+                    current = Subtitle(
+                        index=current.index,
+                        start_time=current.start_time,
+                        end_time=next_sub.end_time,
+                        text=merged_text
+                    )
+                else:
+                    # Can't merge, save current and start new
+                    merged.append(current)
+                    current = next_sub
+            else:
+                # Gap too large, save current and start new
+                merged.append(current)
+                current = next_sub
+
+        # Add last subtitle
+        merged.append(current)
+
+        # Re-index
+        for idx, sub in enumerate(merged, start=1):
+            sub.index = idx
+
+        return merged
+
+    def _filter_abnormal_subtitles(self, subtitles: List[Subtitle]) -> List[Subtitle]:
+        """
+        Detect and remove abnormal subtitles where duration is very long but text is very short.
+
+        Example problem:
+          01:00:25,190 --> 01:01:32,809 (67.6s)
+          嗯嗯。 (only 3 chars)
+
+        This happens when:
+        - Forced Aligner maps short text to entire chunk with lots of silence
+        - ASR only detects a few words in a long audio segment
+        - Both start_time and end_time are likely WRONG
+
+        Solution:
+        - If duration > 15s AND text < 10 chars: REMOVE (can't fix reliably)
+        - Print warning so user knows which parts have issues
+        """
+        filtered = []
+        removed_count = 0
+
+        for sub in subtitles:
+            duration = sub.end_time - sub.start_time
+            text_len = len(sub.text.strip())
+
+            # Detect abnormal: very long duration but very short text
+            # Threshold: duration > 15s AND text < 10 chars
+            if duration > 20.0 and text_len < 10:
+                # Skip this subtitle (can't reliably fix timestamp)
+                removed_count += 1
+                print(f"⚠️  Removed abnormal subtitle #{sub.index}: "
+                      f"{self._format_time(sub.start_time)} --> {self._format_time(sub.end_time)} "
+                      f"({duration:.1f}s) '{sub.text.strip()}'")
+            else:
+                # Normal subtitle, keep as is
+                filtered.append(sub)
+
+        if removed_count > 0:
+            print(f"\n⚠️  Total removed: {removed_count} abnormal subtitle(s)")
+            print("    Reason: Duration too long for text length (likely Forced Aligner error)")
+            print("    Suggestion: Reduce MAX_CHUNK_SECONDS in .env for better accuracy\n")
+
+        # Re-index
+        for idx, sub in enumerate(filtered, start=1):
+            sub.index = idx
+
+        return filtered
+
+    def _format_time(self, seconds: float) -> str:
+        """Format seconds to HH:MM:SS,mmm"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millis = int((seconds % 1) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
 def generate_srt_content(subtitles: List[Subtitle]) -> str:
