@@ -32,7 +32,6 @@ AutoProcessor.register(Qwen3ASRConfig, Qwen3ASRProcessor)
 from .qwen3_forced_aligner import Qwen3ForcedAligner
 from .utils import (
     MAX_ASR_INPUT_SECONDS,
-    MAX_FORCE_ALIGN_INPUT_SECONDS,
     SAMPLE_RATE,
     SUPPORTED_LANGUAGES,
     AudioChunk,
@@ -304,6 +303,7 @@ class Qwen3ASRModel:
         language: Optional[Union[str, List[Optional[str]]]] = None,
         return_time_stamps: bool = False,
         verbose: bool = True,
+        max_chunk_seconds: Optional[float] = None,  
     ) -> List[ASRTranscription]:
         """
         Transcribe audio with optional context and optional forced alignment timestamps.
@@ -367,8 +367,10 @@ class Qwen3ASRModel:
                 ln = normalize_language_name(str(l))
                 validate_language(ln)
                 langs_norm.append(ln)
-
-        max_chunk_sec = MAX_FORCE_ALIGN_INPUT_SECONDS if return_time_stamps else MAX_ASR_INPUT_SECONDS
+        if max_chunk_seconds is not None:
+            max_chunk_sec = max_chunk_seconds
+        else:
+            max_chunk_sec = MAX_FORCE_ALIGN_INPUT_SECONDS if return_time_stamps else MAX_ASR_INPUT_SECONDS
 
         # chunk audios and record mapping
         if verbose:

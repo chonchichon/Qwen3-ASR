@@ -46,8 +46,6 @@ SAMPLE_RATE = 16000
 MAX_ASR_INPUT_SECONDS = 1200
 # Load MAX_FORCE_ALIGN_INPUT_SECONDS from env, default 180 (3 min)
 # Lower value = more chunks = more accurate but slower
-MAX_FORCE_ALIGN_INPUT_SECONDS = float(os.getenv("MAX_CHUNK_SECONDS", "180"))
-print(f"MAX_FORCE_ALIGN_INPUT_SECONDS: {MAX_FORCE_ALIGN_INPUT_SECONDS}")
 MIN_ASR_INPUT_SECONDS = 0.5
 SUPPORTED_LANGUAGES: List[str] = [
     "Chinese",
