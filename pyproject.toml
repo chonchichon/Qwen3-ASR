@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qwen-asr"
-version = "0.0.7"
-description = "Qwen-ASR python package"
+version = "0.0.8"
+description = "Qwen-ASR python package by Wayto fork"
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
@@ -39,8 +39,8 @@ vllm = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Qwen/Qwen3-ASR"
-Repository = "https://github.com/Qwen/Qwen3-ASR"
+Homepage = "https://github.com/chonchichon/Qwen3-ASR"
+Repository = "https://github.com/chonchichon/Qwen3-ASR"
 
 [project.scripts]
 qwen-asr-demo = "qwen_asr.cli.demo:main"
